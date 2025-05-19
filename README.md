@@ -1,2 +1,5 @@
 # DataAnalytics-Assessment
-CowryWise
+For: CowryWise
+Name: Temitope Obagbemisoye
+Email: joetfx@hotmail.com
+Gmail: jtob891@gmail.com
