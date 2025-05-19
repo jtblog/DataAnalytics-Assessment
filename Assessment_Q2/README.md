@@ -1,76 +1,89 @@
 # 🔄 Transaction Frequency Analysis
 
-This analysis helps segment customers based on how frequently they transact. The goal is to categorize users into **High**, **Medium**, or **Low Frequency** groups based on their monthly transaction behavior across both **savings** and **withdrawal** activities.
+This analysis categorizes customers based on their **average monthly transaction frequency**, combining both **deposits** and **withdrawals**.
 
 ---
 
-## ✅ Approach Explanation
+## 🎯 Objective
 
-### 1. Combine Transaction Sources
-
-Both `savings_savingsaccount` and `withdrawals_withdrawal` tables represent customer transactions:
-
-- Each row in either table represents a financial event (deposit or withdrawal).
-- To get complete transaction data:
-  - Use `UNION ALL` to merge both tables into a single transaction log.
+To help finance and marketing teams segment users into:
+- High Frequency (≥ 10 txns/month)
+- Medium Frequency (3–9 txns/month)
+- Low Frequency (≤ 2 txns/month)
 
 ---
 
-### 2. Count Total Transactions per Customer
+## 🧠 Optimized Approach
 
-- After combining, group by `owner_id` to:
-  - **Count total transactions** per customer.
-  - **Find the earliest and latest transaction date**.
+### Step 1: Combine All Transactions
+Merge `savings_savingsaccount` and `withdrawals_withdrawal` tables using `UNION ALL`, selecting `owner_id` and `created_on` for transaction date.
 
----
+### Step 2: Calculate Activity Metrics per Customer
+For each customer:
+- Count total transactions
+- Determine account activity period in **months**:
+  - `TIMESTAMPDIFF(MONTH, MIN(date), MAX(date)) + 1`
+  - Wrap with `GREATEST(..., 1)` to avoid division by zero
 
-### 3. Calculate Account Activity Duration
+### Step 3: Compute Monthly Average and Categorize
+Calculate:
+- `avg_txn_per_month = total_txns / months_active`
+- Classify frequency using a `CASE`:
+  - **High Frequency**: ≥ 10
+  - **Medium Frequency**: 3–9
+  - **Low Frequency**: ≤ 2
 
-- Compute the number of **months active** per customer:
-  - Based on difference between the earliest and latest transaction dates.
-  - Use `TIMESTAMPDIFF(MONTH, min_date, max_date)` to get active duration.
-  - Use `GREATEST(..., 1)` to ensure at least 1 month (avoiding divide-by-zero).
-
----
-
-### 4. Compute Average Transactions Per Month
-
-- For each customer:
-  - Divide `total_transactions / months_active`.
-
----
-
-### 5. Categorize Customers by Frequency
-
-Assign each customer into a frequency tier:
-
-| Category          | Criteria                       |
-|-------------------|--------------------------------|
-| High Frequency     | Average ≥ 10 txns/month        |
-| Medium Frequency   | Average 3 to 9 txns/month      |
-| Low Frequency      | Average ≤ 2 txns/month         |
+### Step 4: Aggregate by Frequency Group
+For each frequency category:
+- Count how many customers fall into it
+- Compute the average transactions per month (1 decimal precision)
 
 ---
 
-### 6. Aggregate by Category
+## 🧾 SQL QUERY
 
-- Group by the frequency category:
-  - Count how many customers fall in each.
-  - Optionally calculate the average transaction frequency per category.
+```sql
+-- Categorize customers based on average transactions per month
+WITH all_transactions AS (
+    -- Merge savings and withdrawal transactions
+    SELECT owner_id, created_on FROM savings_savingsaccount
+    UNION ALL
+    SELECT owner_id, created_on FROM withdrawals_withdrawal
+),
+user_activity AS (
+    -- Calculate total transactions and active months per user
+    SELECT
+        owner_id,
+        COUNT(*) AS total_txns,
+        -- Compute active duration in months; ensure at least 1
+        GREATEST(TIMESTAMPDIFF(MONTH, MIN(created_on), MAX(created_on)) + 1, 1) AS months_active
+    FROM all_transactions
+    GROUP BY owner_id
+),
+user_frequency AS (
+    -- Compute avg monthly transaction rate and categorize
+    SELECT
+        owner_id,
+        total_txns / months_active AS avg_txn_per_month,
+        CASE
+            WHEN total_txns / months_active >= 10 THEN 'High Frequency'
+            WHEN total_txns / months_active BETWEEN 3 AND 9 THEN 'Medium Frequency'
+            ELSE 'Low Frequency'
+        END AS frequency_category
+    FROM user_activity
+)
+-- Final aggregation by category
+SELECT
+    frequency_category,
+    COUNT(*) AS customer_count,
+    ROUND(AVG(avg_txn_per_month), 1) AS avg_transactions_per_month
+FROM user_frequency
+GROUP BY frequency_category
+ORDER BY FIELD(frequency_category, 'High Frequency', 'Medium Frequency', 'Low Frequency');
 
----
+```
 
-## 🗒️ Key Points
-
-- **`all_transactions` CTE**: Combines deposits and withdrawals using `UNION ALL`.
-- **Aggregation**: Counts total transactions and calculates date range per customer.
-- **`GREATEST(..., 1)`**: Ensures minimum 1 month active to prevent division errors.
-- **Accurate categorization**: Based on real activity across both savings and withdrawals.
-- **Scalable**: Can support segmentation for marketing, risk profiling, or product targeting.
-
----
-
-## 📊 Expected Output Format
+## 📊 Expected Output
 
 | frequency_category | customer_count | avg_transactions_per_month |
 |--------------------|----------------|-----------------------------|
@@ -79,3 +92,11 @@ Assign each customer into a frequency tier:
 | Low Frequency      | 3000           | 1.1                         |
 
 ---
+
+## 💡 Highlights
+
+- Uses `FIELD(...)` in `ORDER BY` to enforce custom sorting
+- Prevents divide-by-zero with robust month calculation
+
+---
+

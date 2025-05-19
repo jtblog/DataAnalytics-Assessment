@@ -24,6 +24,11 @@ We use the following formula to annualize customer profitability:
 CLV = (total_transactions / tenure_months) × 12 × avg_profit_per_transaction
 ```
 
+Where:
+- `avg_profit_per_transaction = 0.1% of avg transaction value`
+- Transaction value comes from `confirmed_amount` (in **kobo**, converted to **Naira**)
+- Tenure = Months between `date_joined` and today (at least 1 month)
+
 ---
 
 ## 🔍 Step-by-Step Strategy
@@ -86,9 +91,33 @@ CLV = (total_transactions / tenure_months) × 12 × avg_profit_per_transaction
 
 ---
 
-## 💡 Use Cases
 
-- Identify high-value customers for loyalty rewards.
-- Segment customers by predicted lifetime value.
-- Prioritize support and engagement for top-tier clients.
-- Enhance marketing ROI by focusing on CLV-driven cohorts.
+```sql
+-- Estimate CLV based on tenure and transaction volume
+SELECT 
+    u.id AS customer_id,
+    COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)) AS name,
+    
+    -- Calculate tenure in months (from signup to today)
+    GREATEST(TIMESTAMPDIFF(MONTH, u.date_joined, CURDATE()), 1) AS tenure_months,
+    
+    -- Count total transactions (deposits only, from savings_savingsaccount)
+    COUNT(s.id) AS total_transactions,
+    
+    -- Estimate CLV using simplified formula
+    ROUND(
+        (COUNT(s.id) / GREATEST(TIMESTAMPDIFF(MONTH, u.date_joined, CURDATE()), 1)) 
+        * 12 
+        * 0.001 
+        * AVG(s.confirmed_amount) / 100, -- convert from kobo to Naira
+        2
+    ) AS estimated_clv
+
+FROM users_customuser u
+LEFT JOIN savings_savingsaccount s ON s.owner_id = u.id
+
+GROUP BY u.id, name
+ORDER BY estimated_clv DESC;
+```
+
+---

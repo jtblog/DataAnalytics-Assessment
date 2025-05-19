@@ -1,101 +1,117 @@
-# 🛑 Account Inactivity Alert
+# ⏸️ Account Inactivity Alert
 
-This analysis identifies **active savings or investment accounts** with **no transactions in the past 365 days**. It's useful for detecting dormant or neglected plans for customer outreach, compliance checks, or retention campaigns.
+This report identifies all **active savings or investment accounts** that have had **no inflow or outflow transactions** in the last **365 days**. These accounts are considered **inactive**, helping operations teams drive re-engagement, compliance, and user retention initiatives.
 
 ---
 
 ## ✅ Approach Explanation
 
-### Goal
+### 1. Identify Relevant Plans
 
-Identify **active plans** that are either **savings** or **investments**, and:
+We focus on:
+- **Savings plans**: `is_regular_savings = 1`
+- **Investment plans**: `is_a_fund = 1`
 
-- Have had **no inflow or outflow transactions** in the **last 365 days**, or
-- Have **never had any transaction**.
-
----
-
-## 🔍 Step-by-Step Strategy
-
-### 1. Define "Active" Plans
-
-- A plan is considered **active** if it's a **savings** or **investment** plan:
-  - `is_regular_savings = 1` (Savings)
-  - `is_a_fund = 1` (Investment)
-- (Optional: If you have an `is_active` flag in `plans_plan`, use it to filter.)
+These are the only plan types of interest in this analysis.
 
 ---
 
-### 2. Track Transaction Activity
+### 2. Track All Transactions
 
-- Use **both inflows** (`savings_savingsaccount`) and **outflows** (`withdrawals_withdrawal`) as indicators of activity.
-- Each row in either table represents a transaction for a specific `plan_id`.
+We consider **both inflows and outflows** as indicators of account activity:
+- `savings_savingsaccount`: inflow transactions
+- `withdrawals_withdrawal`: outflow transactions
 
----
-
-### 3. Combine Transactions Across Sources
-
-- Use a `UNION` to merge all inflow and outflow transactions:
-  - Retain only `plan_id` and `created_at` for date tracking.
-- Aggregate to get the **latest transaction date** per `plan_id`.
+Each contains `plan_id` and `created_on` fields.
 
 ---
 
-### 4. Join with Active Plans
+### 3. Combine Transactions
 
-- Use a `LEFT JOIN` to associate each active plan with its most recent transaction (if any).
-- This also captures plans that have **never had any transaction**.
-
----
-
-### 5. Filter for Inactive Plans
-
-- Identify plans where:
-  - `last_transaction_date IS NULL`, or
-  - `DATEDIFF(CURDATE(), last_transaction_date) > 365`.
+We use a `UNION ALL` to merge both inflow and outflow transactions into one list per `plan_id`, retaining `created_on` as the transaction timestamp.
 
 ---
 
-### 6. Compute Inactivity Duration
+### 4. Determine Last Activity per Plan
 
-- Calculate `inactivity_days` as:
-  ```sql
-  DATEDIFF(CURDATE(), last_transaction_date)
-  ```
+From the merged transaction data, we calculate the **most recent activity** (`MAX(created_on)`) for each `plan_id`.
 
 ---
 
-### 7. Enrich Output
+### 5. Identify Inactive Accounts
 
-- Add human-readable plan type:
-  - `"Savings"` if `is_regular_savings = 1`
-  - `"Investment"` if `is_a_fund = 1`
-- Output fields:
-  - `plan_id`, `owner_id`, `type`, `last_transaction_date`, `inactivity_days`
+We join all plans with their last transaction (if any), and flag plans as **inactive** if:
+- They’ve had **no transaction in the past 365 days**, or
+- They’ve had **no transaction ever** (`NULL`)
 
----
+The inactivity duration is calculated as:
 
-## 🗒️ Key Notes
+```sql
+DATEDIFF(CURDATE(), COALESCE(last_transaction_date, p.created_on))
+```
 
-- **`all_transactions` CTE**: Combines all transaction dates from savings and withdrawals.
-- **LEFT JOIN**: Ensures inclusion of plans with **no transactions** (i.e., `NULL`).
-- **Inactivity clock** is reset by **any transaction type**.
-- Uses `CURDATE()` to determine inactivity relative to **today**.
-- Ensures comprehensive coverage across all plan types and owners.
 
 ---
 
-## 📊 Expected Output Format
+This gives the number of days since the last transaction (or since the plan was created).
+
+---
+
+
+```sql
+-- Identify active savings/investment accounts with no transactions in the last 365 days
+WITH all_transactions AS (
+    -- Combine all inflows (deposits) and outflows (withdrawals) per plan
+    SELECT plan_id, created_on FROM savings_savingsaccount
+    UNION ALL
+    SELECT plan_id, created_on FROM withdrawals_withdrawal
+),
+latest_txn_per_plan AS (
+    -- Get the latest transaction date per plan
+    SELECT 
+        plan_id,
+        MAX(created_on) AS last_transaction_date
+    FROM all_transactions
+    GROUP BY plan_id
+)
+SELECT 
+    p.id AS plan_id,
+    s.owner_id,
+    CASE
+        WHEN p.is_regular_savings = 1 THEN 'Savings'
+        WHEN p.is_a_fund = 1 THEN 'Investment'
+        ELSE 'Unknown'
+    END AS type,
+    DATE(l.last_transaction_date) AS last_transaction_date,
+    DATEDIFF(CURDATE(), COALESCE(l.last_transaction_date, p.created_on)) AS inactivity_days
+FROM plans_plan p
+JOIN savings_savingsaccount s ON s.plan_id = p.id
+LEFT JOIN latest_txn_per_plan l ON l.plan_id = p.id
+WHERE 
+    (p.is_regular_savings = 1 OR p.is_a_fund = 1)
+    AND (
+        l.last_transaction_date IS NULL OR 
+        l.last_transaction_date < CURDATE() - INTERVAL 365 DAY
+    )
+GROUP BY p.id, s.owner_id, type, last_transaction_date
+ORDER BY inactivity_days DESC;
+```
+
+
+## 📤 Output Format
 
 | plan_id | owner_id | type       | last_transaction_date | inactivity_days |
 |---------|----------|------------|------------------------|------------------|
-| 1001    | 305      | Savings    | 2023-08-10             | 92               |
-| 1005    | 422      | Investment | NULL                   | 460              |
+| 1001    | 305      | Savings    | 2023-08-10             | 400              |
+| 1005    | 422      | Investment | NULL                   | 600              |
 
 ---
 
-## 💡 Use Cases
+## 🗒️ Notes
 
-- Trigger re-engagement email campaigns for inactive customers.
-- Identify dormant plans for possible deactivation.
-- Feed into churn prediction or customer health models.
+- `LEFT JOIN` ensures we capture plans that **never transacted**.
+- `COALESCE(..., created_on)` handles missing transaction dates gracefully.
+- `GROUP BY` ensures per-plan uniqueness in the output.
+- `DATEDIFF` is used for date arithmetic and is MySQL-specific.
+- This query assumes all transaction timestamps are stored in `created_on`.
+
